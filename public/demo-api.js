@@ -277,6 +277,7 @@
       this._lastId = 0;
       this._timer = null;
       this._closed = false;
+      this._first = true;
 
       streams.add(this);
 
@@ -295,7 +296,11 @@
     }
 
     _schedule() {
-      const delay = 7000 + Math.floor(Math.random() * 5000);
+      // First payload lands quickly so a freshly created bin does not sit empty.
+      const delay = this._first
+        ? 2200
+        : 7000 + Math.floor(Math.random() * 5000);
+      this._first = false;
       this._timer = setTimeout(() => {
         if (this._closed) return;
         const bin = this.binToken ? getBin(this.binToken) : null;
