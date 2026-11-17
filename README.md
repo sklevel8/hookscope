@@ -1,288 +1,155 @@
-# HookScope — Real-Time Webhook Inspector
+# HookScope — real-time webhook inspector
 
-An ephemeral webhook tester in the spirit of Webhook.site: open the app, get a unique
-endpoint, fire any HTTP request at it, and watch the method, headers, query parameters,
-raw body, and parsed payload stream into a browser inspector over Server-Sent Events.
+Open the app, get a throwaway endpoint, point a provider at it, and watch the requests arrive live.
+No account, no listener to deploy, no payload retained longer than an hour.
 
-Bins expire automatically. In production, payloads live in Redis with a sliding TTL, so
-the inspector never becomes a permanent data store.
+**Live demo:** https://sklevel8-hookscope.netlify.app
+**Stack:** Node.js 20 · Express · Server-Sent Events · Redis (or in-memory)
 
-## Features
+---
 
-- **Unique capability URLs** — 96-bit URL-safe tokens (`/wh/:token`), no accounts needed.
-- **Live capture over SSE** — requests appear instantly without polling or refreshing.
-- **Full request inspection** — headers, decoded query params, IP address, HTTP version,
-  content type, body size, parsed JSON/form data, and the exact raw body.
-- **Raw body preservation** — important for inspecting Stripe/GitHub style HMAC signatures
-  that break if a body is re-serialized.
-- **Redis-backed TTL storage** — a bin and its payloads disappear 1 hour after the last
-  request. The TTL is refreshed on every captured webhook.- **Automatic Redis fallback** — in development, if Redis is unavailable the app logs a
-  warning and uses an in-memory store, so `npm run dev` works without Docker.
-- **Copy as cURL** — rebuild a captured request, including custom signature headers and
-  the raw body, from the inspector.
-- **Safe rendering** — untrusted payloads are rendered with DOM text nodes, never
-  `innerHTML`, under a strict Content Security Policy.
-- **Operational details** — SSE heartbeats, client backpressure limits, reconnect handling,
-  body-size limits, per-IP rate limits, request caps, graceful shutdown, and health checks.
+## Why this exists
 
-## Quick start
+Debugging a webhook is uniquely awkward. You cannot see the request until you have something
+listening, and the thing you most need to inspect — headers, query strings, the **exact bytes of
+the body** — is exactly what frameworks normalise away. Stripe and GitHub sign the raw body, so a
+re-serialised JSON object is useless for checking a signature.
 
-Requirements: Node.js 20.11+ and npm. Redis is optional for local development.
+The usual workaround is to stand up a tunnel and a throwaway server. That takes minutes and then
+leaves a listener running. HookScope collapses that into: open a page, get a URL, send the request,
+read it.
 
-```bash
-npm install
-cp .env.example .env        # Windows PowerShell: Copy-Item .env.example .env
-npm run dev
-```
-
-Open <http://localhost:3000>. The dashboard creates a new bin and gives you a URL like:
-
-```text
-http://localhost:3000/wh/4f9b2c1a9d3e7f80
-```
-
-Send a request from another terminal:
-
-```bash
-curl -X POST http://localhost:3000/wh/YOUR_TOKEN \
-  -H "Content-Type: application/json" \
-  -H "X-GitHub-Event: push" \
-  -d '{"action":"opened","repository":{"name":"high-performance-url-shortener"}}'
-```
-
-The request appears in the list immediately. Click it to inspect the body, headers, query
-parameters, and reconstructed raw HTTP request.
-
-> If port 3000 is already taken by another project, use `PORT=3100 npm start` or set
-> `PORT=3100` in `.env`.
-
-### Run with Redis
-
-Redis is what makes the TTL behavior real. With Docker:
-
-```bash
-docker compose up --build
-```
-
-Or run Redis by itself and point `.env` at it:
-
-```bash
-docker run --rm -p 6379:6379 redis:7-alpine
-```
-
-```env
-STORE_DRIVER=redis
-REDIS_URL=redis://localhost:6379
-```
-
-Then `npm run dev`. The header badge and `/api/health` show `redis` instead of `memory`.
-
-`STORE_DRIVER=auto` (the default) probes Redis and falls back to memory if it is not
-reachable. Use `STORE_DRIVER=redis` in production so a misconfiguration fails fast instead
-of silently losing history on restart.
+The second design driver is privacy. Webhook payloads routinely contain payment details, email
+addresses and customer identifiers. A debugging tool should not become a permanent store of them,
+so a bin and everything captured in it expire **one hour after the last request** — the TTL is
+refreshed on every new payload, and expiry is the default rather than a cleanup job.
 
 ## How it works
 
-```text
-                         POST /api/bins
-Browser ──────────────────────────────────────┐
-   │                                          ▼
-   │  EventSource                   Express (Node.js)
-   │  GET /api/bins/:token/stream   ├── static dashboard
-   └──────────── SSE ───────────────┤
-                                     ├── POST /api/bins       → allocate token
-Webhook sender                       ├── ALL  /wh/:token      → capture request
-   │                                 ├── GET  /api/bins/:token → history
-   └──── POST /wh/:token ────────────┤
-                                     └── Redis store
-                                          RPUSH requests
-                                          EXPIRE bin + list
+```
+Browser ──POST /api/bins──────────────► creates a bin, returns /wh/<token> + expiry
+   │
+   │◄────── SSE /api/bins/<token>/stream ──── pushed request objects + heartbeats
+   │
+Provider ──POST /wh/<token>──► capture raw body ─► store ─► broadcast to SSE subscribers
 ```
 
-1. The browser asks the API for a new bin. The server generates a random token and creates
-   a Redis key with a TTL.
-2. The browser opens an `EventSource` to `/api/bins/:token/stream`. The SSE hub keeps one
-   response stream per viewer and sends a heartbeat every 20 seconds.
-3. An external service posts to `/wh/:token`. Express captures the raw bytes, parses them
-   best-effort, appends the request to Redis, and publishes the same object to every live
-   SSE viewer for that token.
-4. Each new webhook refreshes the bin's TTL. Redis removes the metadata and request list
-   after the configured inactivity window.
+**Bins.** A token is 96 bits of URL-safe randomness (`/wh/:token`), so guessing one is not a
+realistic path to someone else's traffic. The token *is* the capability — there is nothing else to
+authenticate.
 
-### Captured request shape
+**Capture.** The ingest route reads the body as a buffer, preserving both the parsed form (JSON or
+URL-encoded) and the untouched `rawBody`. The inspector shows you both, and "copy as cURL"
+reconstructs the request with its original headers and bytes so signature checks behave the same
+way when you replay it.
 
-```json
-{
-  "id": "0659bc89-3e0f-419c-8a02-d2da6765fe43",
-  "method": "POST",
-  "path": "/wh/nKS2De0SHb714A0_?source=github",
-  "pathname": "/wh/nKS2De0SHb714A0_",
-  "query": { "source": "github" },
-  "rawQuery": "source=github",
-  "headers": { "content-type": "application/json" },
-  "ip": "127.0.0.1",
-  "remoteAddress": "::ffff:127.0.0.1",
-  "httpVersion": "1.1",
-  "protocol": "http",
-  "receivedAt": "2026-10-29T12:15:17.865Z",
-  "contentType": "application/json",
-  "body": { "event": "deployment" },
-  "rawBody": "{\"event\":\"deployment\"}",
-  "bodyEncoding": "utf8",
-  "bodyType": "json",
-  "isJson": true,
-  "parseError": null,
-  "bodySize": 23
-}
-```
+**Streaming.** Subscribers get new requests over Server-Sent Events, which is a better fit than
+WebSockets here: traffic is one-directional, reconnection is built into the browser, and it stays
+plain HTTP. The hub sends periodic heartbeats so proxies do not silently drop an idle stream, caps
+concurrent subscribers per bin, and drops slow clients rather than buffering without bound.
 
-Binary bodies are stored as base64 (`bodyEncoding: "base64"`) so images, protobuf, and
-other non-UTF-8 payloads are not corrupted. Multipart bodies are shown as a raw preview.
+**Expiry.** In production the store is Redis with a sliding TTL — each captured request resets it.
+In development, if Redis is not running, the app logs a warning and falls back to an in-memory
+store so `npm run dev` works with no Docker.
 
-## API
+### API
 
-| Method | Route | Purpose |
+| Method | Path | Purpose |
 | --- | --- | --- |
-| `POST` | `/api/bins` | Create a bin. Returns `token`, `endpoint`, `ttlSeconds`, `expiresAt`. |
-| `GET` | `/api/bins/:token` | Fetch request history, newest first. `404` when expired. |
-| `GET` | `/api/bins/:token/meta` | Lightweight TTL/status check used by SSE reconnect logic. |
-| `GET` | `/api/bins/:token/stream` | SSE stream. Emits `connected` and `request` events. |
-| `DELETE` | `/api/bins/:token` | Delete a bin immediately (idempotent, `204`). |
-| `ANY` | `/wh/:token` | Capture any method/path. Responds `200` with the received request ID. |
-| `GET` | `/api/health` | `{ ok, store, uptimeSeconds }`. |
+| `GET` | `/api/health` | Liveness plus active store driver |
+| `POST` | `/api/bins` | Create a bin |
+| `GET` | `/api/bins/:token` | Bin metadata and captured requests |
+| `GET` | `/api/bins/:token/meta` | Metadata only (used for expiry polling) |
+| `DELETE` | `/api/bins/:token` | Destroy a bin immediately |
+| `GET` | `/api/bins/:token/stream` | SSE stream of new requests |
+| *any* | `/wh/:token/*` | Ingest a webhook |
 
-All mutating webhook responses use the same envelope:
+## Features
 
-```json
-{ "ok": true, "id": "…", "receivedAt": "…", "deliveredTo": 1 }
+- Capability-URL bins with 96-bit tokens and sliding expiry
+- Live inspector over SSE with heartbeats and reconnect handling
+- Headers, query parameters, IP, HTTP version, content type, body size, parsed body and raw body
+- Copy-as-cURL that reproduces the original request
+- Untrusted payloads rendered as DOM text nodes under a strict Content Security Policy — never
+  `innerHTML`
+- Body-size caps, per-IP rate limits, per-bin request caps and per-bin subscriber caps
+- Graceful shutdown, health checks, and an in-memory fallback store
+
+## Run it locally
+
+Requirements: Node.js 20.11+. Redis is optional.
+
+```bash
+npm install
+cp .env.example .env
+npm run dev
 ```
 
-`deliveredTo` is the number of live SSE viewers that saw the event.
+Open <http://localhost:3000>, then from another terminal:
 
-## Configuration
+```bash
+curl -X POST http://localhost:3000/wh/<your-token> \
+  -H "Content-Type: application/json" \
+  -H "X-GitHub-Event: push" \
+  -d '{"action":"opened","repository":{"name":"hookscope"}}'
+```
 
-Copy `.env.example` to `.env` and adjust as needed.
+The request appears in the list immediately.
+
+With real TTL behaviour:
+
+```bash
+docker compose up --build     # Redis-backed store
+```
 
 | Variable | Default | Notes |
 | --- | --- | --- |
-| `PORT` | `3000` | HTTP port. |
-| `STORE_DRIVER` | `auto` | `auto`, `redis`, or `memory`. |
-| `REDIS_URL` | — | Required for `redis`; `rediss://` works for Upstash/TLS. |
-| `BIN_TTL_SECONDS` | `3600` | Sliding inactivity TTL, refreshed on each webhook. |
-| `MAX_REQUESTS_PER_BIN` | `200` | Stored history cap; oldest requests are trimmed. |
-| `MAX_BODY_SIZE` | `1mb` | Express raw body limit; larger requests get a JSON `413`. |
-| `TRUST_PROXY` | `0` | Set to `1` behind Render/Railway/Fly/nginx so `req.ip` uses `X-Forwarded-For`. |
-| `SSE_HEARTBEAT_MS` | `20000` | SSE keep-alive comment interval. |
-| `MAX_SSE_CLIENTS_PER_BIN` | `20` | Prevents a single bin from exhausting stream slots. |
-| `RATE_LIMIT_DISABLED` | `0` | Set to `1` for load tests. |
+| `STORE_DRIVER` | `auto` | `redis`, `memory`, or `auto` (fall back if Redis is down) |
+| `BIN_TTL_SECONDS` | `3600` | Sliding window, refreshed on every request |
+| `MAX_REQUESTS_PER_BIN` | `200` | Oldest requests are dropped beyond this |
+| `MAX_BODY_SIZE` | `1mb` | Ingest body cap |
+| `MAX_SSE_CLIENTS_PER_BIN` | `20` | Backpressure guard |
+| `SSE_HEARTBEAT_MS` | `20000` | Keep-alive interval |
 
-## Security and resource notes
+## The deployed demo
 
-- A bin token is a **capability URL**: anyone with the URL can send requests to it and
-  view its history. Treat it like a secret while the bin is alive.
-- Payloads are untrusted. The frontend builds every value with `textContent` and the app
-  ships a strict CSP (`script-src 'self'`, no inline scripts/styles).
-- The webhook receiver has a 1 MB body limit, a per-IP rate limit, a per-bin stored-request
-  cap, and a Redis TTL. There is no authentication or per-bin byte budget; if you expose
-  this publicly, put it behind your normal abuse controls and use managed Redis limits.
-- Webhook payloads are never written to logs. Only counts/errors are logged.
-- `TRUST_PROXY=1` is only appropriate when there is exactly one trusted reverse proxy in
-  front of the app. Otherwise clients can spoof `X-Forwarded-For`.
-- In-memory mode is for development and tests. It is not shared between processes and is
-  lost on restart.
+The Netlify site publishes `public/`. Before the app module loads, `public/demo-api.js` installs a
+fetch interceptor and a small `EventSource` replacement, so the inspector runs entirely in the
+browser: bins are created in memory, a realistic set of provider payloads (Stripe, GitHub,
+Shopify, PayFast, a health probe) streams in on a timer, and the "new bin" button works as it does
+locally.
 
-## Testing
+That shim is what makes a static host useful here. A real webhook inspector needs a server that can
+accept POSTs from third parties; the demo reproduces the interface and the data shapes, and labels
+itself as a demo in the header. The genuine implementation is `src/`.
+
+## Project layout
+
+```
+src/app.js                  routes, middleware, SSE hub wiring
+src/index.js                server bootstrap and graceful shutdown
+src/lib/body.js             body parsing that keeps raw bytes
+src/lib/request.js          captured-request shape
+src/lib/token.js            bin token generation
+src/realtime/hub.js         SSE subscriber registry and broadcasting
+src/store/memory-store.js   in-memory store with TTL
+src/store/redis-store.js    Redis-backed sliding-TTL store
+public/                     dashboard + demo shim (the deployed site)
+test/                       node:test suites
+```
+
+## Tests
 
 ```bash
 npm test
 ```
 
-The suite uses Node's built-in test runner and an in-memory store. It covers JSON, form,
-text, and binary capture; raw body preservation; TTL expiry; request caps; deletion;
-oversized payloads; SSE delivery; health; and the Redis fallback path.
-
-To watch tests:
-
-```bash
-npm run test:watch
-```
-
 ## Deployment
 
-SSE needs a long-lived Node process. **Do not deploy this to Vercel serverless functions**:
-functions are short-lived, connections are not guaranteed to stay open, and the in-memory
-store is not shared across instances. Use Render, Railway, Fly.io, a VPS, or any container
-host that supports streaming responses.
+`netlify.toml` publishes `public/`, adds security headers, and rewrites `/b/*` back to `index.html`
+so a shared bin link opens the inspector instead of 404-ing. The real service is a normal Node app
+with a `Dockerfile` and `compose.yaml`.
 
-### Render
+## Licence
 
-1. Push this repository to GitHub.
-2. Create a Render **Key Value** (Redis-compatible) instance, or an Upstash Redis database.
-3. Create a **Web Service** from the repository:
-   - Runtime: Node
-   - Build command: `npm ci`
-   - Start command: `npm start`
-   - Health check path: `/api/health`
-4. Set environment variables:
-
-```env
-NODE_ENV=production
-STORE_DRIVER=redis
-REDIS_URL=rediss://...        # copy from your Redis provider
-TRUST_PROXY=1
-BIN_TTL_SECONDS=3600
-```
-
-5. Deploy, open the service URL, and check `/api/health` reports `"store": "redis"`.
-
-### Docker / any VPS
-
-```bash
-docker compose up --build -d
-```
-
-The included `compose.yaml` runs the app and a local Redis instance. For a public
-deployment, terminate TLS at your proxy and set `TRUST_PROXY=1` (or the number of proxy
-hops). The app sends `X-Accel-Buffering: no` on the SSE route so nginx does not buffer the
-stream.
-
-## Project structure
-
-```text
-src/
-  app.js                 Express app factory, routes, SSE wiring, error handling
-  index.js               Startup, listener, graceful shutdown
-  config.js              Environment parsing and validation
-  lib/
-    body.js              Raw-buffer parsing, JSON/form/text/binary detection
-    request.js           Captured-request model
-    token.js             96-bit URL-safe token helpers
-  realtime/
-    hub.js               SSE channel hub, heartbeats, backpressure
-  store/
-    index.js             Store selection + Redis probe/fallback
-    redis-store.js       Redis list + TTL implementation
-    memory-store.js      Development/test implementation
-public/
-  index.html             Dashboard shell
-  app.js                 SSE client, inspector, filtering, copy-as-cURL
-  styles.css             Design system, responsive layout
-  favicon.svg
-test/
-  app.test.js            End-to-end HTTP/SSE tests
-  unit.test.js           Parser, store, and fallback tests
-```
-
-## Design decisions worth calling out
-
-- **Raw bytes over parsed-only bodies.** Many webhook providers sign the raw request body.
-  Re-serializing JSON changes whitespace/key order and breaks signature checks, so the
-  server preserves the original text/base64 alongside the parsed view.
-- **Sliding TTL.** The TTL refreshes on each new request, so an actively used bin stays
-  alive; an abandoned one disappears. Redis expires both the metadata and the request list.
-- **SSE instead of WebSockets.** The data flow is one-way (server → browser), SSE is built
-  into browsers, reconnects automatically, and works over plain HTTP without an upgrade.
-- **Text nodes, not HTML.** A webhook inspector is an XSS target by definition: the payload
-  is attacker-controlled. Rendering is entirely DOM/text based, and CSP is a second layer.
-- **Pluggable store.** The app factory accepts any store with a small interface, which keeps
-  HTTP tests fast and makes the Redis path explicit at startup.
+MIT
