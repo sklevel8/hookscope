@@ -1,0 +1,30 @@
+{
+  "name": "webhook-inspector",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Real-time webhook tester and payload inspector with SSE streaming and TTL-backed ephemeral bins.",
+  "type": "module",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node --test",
+    "test:watch": "node --test --watch"
+  },
+  "keywords": [
+    "webhooks",
+    "sse",
+    "redis",
+    "express",
+    "developer-tools"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^18.0.9",
+    "express": "^5.3.0",
+    "express-rate-limit": "^8.7.1",
+    "redis": "^6.3.1"
+  }
+}

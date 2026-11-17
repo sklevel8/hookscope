@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#060913" />
+    <meta
+      name="description"
+      content="An ephemeral webhook inspector with live Server-Sent Events streaming, raw payload capture, and automatic expiry."
+    />
+    <title>HookScope — Real-Time Webhook Inspector</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <div class="ambient" aria-hidden="true">
+      <span class="ambient-orb ambient-orb--one"></span>
+      <span class="ambient-orb ambient-orb--two"></span>
+    </div>
+
+    <header class="topbar">
+      <a class="brand" href="/">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path d="M9 8.5V6a3 3 0 0 1 6 0v2.5" stroke-linecap="round" />
+            <path d="M6.5 10.5h11v7a2 2 0 0 1-2 2h-7a2 2 0 0 1-2-2v-7Z" />
+            <path d="M9.5 14.2h5M9.5 16.8h3" stroke-linecap="round" />
+          </svg>
+        </span>
+        <span class="brand-name">Hook<span>Scope</span></span>
+        <span class="brand-tag">webhook inspector</span>
+      </a>
+
+      <div class="topbar-actions">
+        <span id="storeBadge" class="store-badge" title="Storage backend">
+          <span class="store-dot" aria-hidden="true"></span>
+          <span id="storeLabel">Storage</span>
+        </span>
+        <div id="connectionStatus" class="conn conn--connecting" role="status" aria-live="polite">
+          <span class="conn-dot" aria-hidden="true"></span>
+          <span id="connectionLabel">Connecting</span>
+        </div>
+        <button id="newBinBtn" class="btn btn--primary" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path d="M12 5v14M5 12h14" stroke-linecap="round" />
+          </svg>
+          <span>New bin</span>
+        </button>
+      </div>
+    </header>
+
+    <main id="main" class="page">
+      <div id="expiredBanner" class="banner" role="alert" hidden>
+        <span class="banner-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 7.5V12l3 2" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </span>
+        <span class="banner-text">This bin has expired. The URL no longer accepts requests.</span>
+        <button id="bannerNewBinBtn" class="btn btn--small btn--primary" type="button">Create a new bin</button>
+      </div>
+
+      <section class="hero card">
+        <div class="hero-copy">
+          <div class="kicker"><span class="kicker-dot" aria-hidden="true"></span> Ephemeral endpoint</div>
+          <h1>Inspect any webhook.<br /><span class="grad">In real time.</span></h1>
+          <p class="hero-lede">
+            Send a request to your unique URL. Headers, query parameters, and the raw payload
+            stream straight into the inspector — then disappear automatically.
+          </p>
+          <div class="hero-stats">
+            <div class="stat">
+              <span id="statCount" class="stat-value">0</span>
+              <span class="stat-label">requests</span>
+            </div>
+            <span class="stat-divider" aria-hidden="true"></span>
+            <div class="stat">
+              <span id="statTtl" class="stat-value">1h</span>
+              <span class="stat-label">until expiry</span>
+            </div>
+            <span class="stat-divider" aria-hidden="true"></span>
+            <div class="stat">
+              <span class="stat-value stat-value--mono">ANY</span>
+              <span class="stat-label">HTTP method</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="hero-endpoint">
+          <div class="endpoint-head">
+            <span class="label">Your webhook URL</span>
+            <span id="expiryBadge" class="expiry-badge">initialising…</span>
+          </div>
+          <div class="copy-field">
+            <code id="endpointUrl" class="copy-value">Creating your bin…</code>
+            <button id="copyUrlBtn" class="icon-btn" type="button" aria-label="Copy webhook URL" title="Copy webhook URL">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                <rect x="9" y="9" width="10" height="10" rx="2" />
+                <path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3" stroke-linecap="round" />
+              </svg>
+            </button>
+          </div>
+
+          <details class="curl">
+            <summary>
+              <span>Send a test request</span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="m8 10 4 4 4-4" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </summary>
+            <div class="curl-body">
+              <pre id="curlSample" class="code-block code-block--curl">Preparing example…</pre>
+              <button id="copyCurlBtn" class="btn btn--small btn--ghost" type="button">Copy cURL</button>
+            </div>
+          </details>
+
+          <p class="hero-note">
+            Works with <kbd>POST</kbd>, <kbd>PUT</kbd>, <kbd>PATCH</kbd>, or any method. Data expires
+            <strong id="ttlNote">1 hour after the last request</strong>.
+          </p>
+        </div>
+      </section>
+
+      <section class="workspace" aria-label="Webhook inspector">
+        <aside class="requests-card card">
+          <div class="panel-head">
+            <div>
+              <h2>Incoming requests</h2>
+              <p id="requestSummary">Waiting for the first request</p>
+            </div>
+            <span id="requestCount" class="count-badge" aria-label="Request count">0</span>
+          </div>
+
+          <div class="filter-wrap">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <circle cx="11" cy="11" r="6.5" />
+              <path d="m16 16 4 4" stroke-linecap="round" />
+            </svg>
+            <input
+              id="filterInput"
+              type="search"
+              placeholder="Filter path, body, or headers…"
+              autocomplete="off"
+              spellcheck="false"
+              aria-label="Filter requests"
+            />
+            <kbd class="filter-kbd">/</kbd>
+          </div>
+
+          <div id="requestList" class="request-list" aria-label="Captured webhook requests"></div>
+
+          <div id="requestEmpty" class="empty-list">
+            <div class="listen-visual" aria-hidden="true">
+              <span class="listen-ring"></span>
+              <span class="listen-ring listen-ring--two"></span>
+              <span class="listen-core">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                  <path d="M12 4v10" stroke-linecap="round" />
+                  <path d="m8.5 10.5 3.5 4 3.5-4" stroke-linecap="round" stroke-linejoin="round" />
+                  <path d="M5 16.5v1A2.5 2.5 0 0 0 7.5 20h9a2.5 2.5 0 0 0 2.5-2.5v-1" stroke-linecap="round" />
+                </svg>
+              </span>
+            </div>
+            <p class="empty-title">Listening for webhooks</p>
+            <p class="empty-text">Fire a request at your endpoint and it will appear here instantly.</p>
+            <span class="empty-hint">No refresh. No polling. Pure SSE.</span>
+          </div>
+
+          <div class="panel-foot">
+            <span id="streamHint" class="stream-hint">
+              <span class="mini-dot" aria-hidden="true"></span> SSE stream connecting
+            </span>
+            <span>newest first</span>
+          </div>
+        </aside>
+
+        <section class="inspector-card card" aria-label="Request inspector">
+          <div id="inspectorEmpty" class="inspector-empty">
+            <div class="inspector-grid" aria-hidden="true">
+              <span class="grid-ping"></span>
+              <span class="grid-cross grid-cross--one"></span>
+              <span class="grid-cross grid-cross--two"></span>
+            </div>
+            <h2>Nothing selected yet</h2>
+            <p>Pick a request from the list to inspect its headers, query string, parsed body, and raw bytes.</p>
+            <div class="shortcut-row">
+              <span><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
+              <span><kbd>/</kbd> filter</span>
+              <span><kbd>Esc</kbd> close</span>
+            </div>
+          </div>
+
+          <div id="inspectorView" class="inspector-view" hidden>
+            <header class="inspector-head">
+              <div class="inspector-title">
+                <span id="detailMethod" class="method method--post">POST</span>
+                <div class="detail-heading">
+                  <h2 id="detailPath" class="detail-path">/wh/…</h2>
+                  <p id="detailTime" class="detail-time">—</p>
+                </div>
+              </div>
+              <div class="inspector-actions">
+                <button id="copyCurlRequestBtn" class="btn btn--small btn--ghost" type="button">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                    <path d="m8 8-4 4 4 4M16 8l4 4-4 4M13.5 5l-3 14" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                  cURL
+                </button>
+                <button id="copyJsonBtn" class="btn btn--small btn--ghost" type="button">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                    <rect x="9" y="9" width="10" height="10" rx="2" />
+                    <path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3" stroke-linecap="round" />
+                  </svg>
+                  JSON
+                </button>
+              </div>
+            </header>
+
+            <div class="meta-grid">
+              <div class="meta-item">
+                <span>IP address</span>
+                <code id="metaIp">—</code>
+              </div>
+              <div class="meta-item">
+                <span>Content type</span>
+                <code id="metaContentType">—</code>
+              </div>
+              <div class="meta-item">
+                <span>Body size</span>
+                <code id="metaSize">—</code>
+              </div>
+              <div class="meta-item">
+                <span>Request ID</span>
+                <code id="metaId" title="">—</code>
+              </div>
+            </div>
+
+            <div class="tabs" role="tablist" aria-label="Request details">
+              <button id="tab-body" class="tab" role="tab" aria-selected="true" aria-controls="panel-body" data-tab="body">
+                Body
+              </button>
+              <button id="tab-headers" class="tab" role="tab" aria-selected="false" aria-controls="panel-headers" data-tab="headers" tabindex="-1">
+                Headers
+              </button>
+              <button id="tab-query" class="tab" role="tab" aria-selected="false" aria-controls="panel-query" data-tab="query" tabindex="-1">
+                Query
+              </button>
+              <button id="tab-raw" class="tab" role="tab" aria-selected="false" aria-controls="panel-raw" data-tab="raw" tabindex="-1">
+                Raw
+              </button>
+            </div>
+
+            <div class="tab-panels">
+              <div id="panel-body" class="tab-panel" role="tabpanel" aria-labelledby="tab-body">
+                <div class="panel-toolbar">
+                  <span id="bodyNote">—</span>
+                  <span id="bodySizeNote" class="panel-toolbar-muted"></span>
+                </div>
+                <div id="bodyContent" class="code-wrap"></div>
+              </div>
+
+              <div id="panel-headers" class="tab-panel" role="tabpanel" aria-labelledby="tab-headers" hidden>
+                <div class="panel-toolbar">
+                  <span id="headersNote">Request headers</span>
+                  <span class="panel-toolbar-muted">as received</span>
+                </div>
+                <div id="headersTable" class="kv-table"></div>
+              </div>
+
+              <div id="panel-query" class="tab-panel" role="tabpanel" aria-labelledby="tab-query" hidden>
+                <div class="panel-toolbar">
+                  <span id="queryNote">Query parameters</span>
+                  <span class="panel-toolbar-muted">decoded</span>
+                </div>
+                <div id="queryTable" class="kv-table"></div>
+              </div>
+
+              <div id="panel-raw" class="tab-panel" role="tabpanel" aria-labelledby="tab-raw" hidden>
+                <div class="panel-toolbar">
+                  <span>Raw HTTP request</span>
+                  <span class="panel-toolbar-muted">reconstructed</span>
+                </div>
+                <div class="code-wrap">
+                  <pre id="rawContent" class="code-block"></pre>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>HookScope <span class="footer-sep">/</span> ephemeral webhook inspector</span>
+      <span class="footer-meta"><span id="footerStore">—</span> storage <span class="footer-sep">/</span> requests self-destruct</span>
+    </footer>
+
+    <div id="toastRegion" class="toasts" role="status" aria-live="polite"></div>
+    <script src="/demo-api.js"></script>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
